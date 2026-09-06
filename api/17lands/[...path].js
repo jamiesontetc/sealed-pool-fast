@@ -56,7 +56,7 @@ module.exports = async function handler(request, response) {
     const upstreamResponse = await fetch(upstream, {
       headers: {
         accept: "application/json",
-        "user-agent": "Rank My Sealed Vercel proxy",
+        "user-agent": "SealedPoolFast Vercel proxy",
       },
     });
     const body = await upstreamResponse.text();
