@@ -1,0 +1,12 @@
+{
+  "name": "rank-my-sealed",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Rank MTG Arena sealed pools with 17Lands sealed GIH power/depth and fixing analysis.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
