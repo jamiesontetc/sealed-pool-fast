@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rank My Sealed</title>
+    <meta
+      name="description"
+      content="Paste an MTG Arena sealed pool and analyze color-pair power, depth, and fixing using 17Lands Sealed GIH data."
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="intro" aria-labelledby="app-title">
+        <div>
+          <p class="eyebrow">17Lands sealed snapshot</p>
+          <h1 id="app-title">Rank My Sealed</h1>
+        </div>
+        <p class="source-note">
+          Paste an MTG Arena sealed pool. Results use public 17Lands
+          <strong>Sealed</strong> or <strong>TradSealed</strong> GIH data, plus
+          Scryfall oracle text for fixing. Please keep this 17Lands attribution
+          visible.
+        </p>
+      </section>
+
+      <section class="tool" aria-labelledby="export-label">
+        <div class="tool-head">
+          <label id="export-label" for="arena-export">Arena Export</label>
+          <fieldset class="format-toggle">
+            <legend>Format</legend>
+            <label>
+              <input type="radio" name="format" value="Sealed" checked />
+              Sealed
+            </label>
+            <label>
+              <input type="radio" name="format" value="TradSealed" />
+              TradSealed
+            </label>
+          </fieldset>
+        </div>
+        <textarea
+          id="arena-export"
+          spellcheck="false"
+          placeholder="Deck&#10;1 Card Name (SET) 123&#10;&#10;Sideboard&#10;1 Other Card (SET) 45"
+        ></textarea>
+        <div class="actions">
+          <button id="analyze-button" type="button">Analyze</button>
+          <button id="sample-button" class="secondary" type="button">
+            Load Sample
+          </button>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="results" class="results hidden" aria-live="polite">
+        <div class="summary-grid">
+          <article>
+            <span>Set</span>
+            <strong id="set-name">-</strong>
+          </article>
+          <article>
+            <span>Format</span>
+            <strong id="format-name">-</strong>
+          </article>
+          <article>
+            <span>Date Range</span>
+            <strong id="date-range">-</strong>
+          </article>
+          <article>
+            <span>Set Avg GIH</span>
+            <strong id="set-avg-gih">-</strong>
+          </article>
+          <article>
+            <span>Pool Size</span>
+            <strong id="pool-size">-</strong>
+          </article>
+        </div>
+
+        <p id="gih-note" class="gih-note hidden"></p>
+
+        <section class="lane-section" aria-labelledby="pairs-title">
+          <div class="section-head">
+            <h2 id="pairs-title">Color Pairs</h2>
+            <p class="section-note">
+              Depth is copies with GIH WR above the set average. Power is the
+              top 3 unique cards by GIH WR. Pair lanes include the two monocolor
+              cards plus the gold pair.
+            </p>
+          </div>
+          <div class="table-wrap">
+            <table class="lane-table">
+              <thead>
+                <tr>
+                  <th scope="col">
+                    <button type="button" class="sort-button" data-sort="pair" data-table="pairs">
+                      Pair
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button type="button" class="sort-button" data-sort="depth" data-table="pairs">
+                      Depth
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button type="button" class="sort-button" data-sort="power" data-table="pairs">
+                      Top 3 Power
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="pairs-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="lane-section" aria-labelledby="mono-title">
+          <div class="section-head">
+            <h2 id="mono-title">Monocolor</h2>
+            <p class="section-note">
+              A card belongs to a mono lane when its 17Lands colors are a subset
+              of that single color. Colorless cards are excluded here.
+            </p>
+          </div>
+          <div class="table-wrap">
+            <table class="lane-table">
+              <thead>
+                <tr>
+                  <th scope="col">
+                    <button type="button" class="sort-button" data-sort="pair" data-table="mono">
+                      Color
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button type="button" class="sort-button" data-sort="depth" data-table="mono">
+                      Depth
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button type="button" class="sort-button" data-sort="power" data-table="mono">
+                      Top 3 Power
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="mono-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="lane-section" aria-labelledby="colorless-title">
+          <div class="section-head">
+            <h2 id="colorless-title">Colorless</h2>
+            <p class="section-note">
+              Artifacts and other cards with no WUBRG colors. Colorless fixers
+              are listed under Fixing instead.
+            </p>
+          </div>
+          <article id="colorless-card" class="lane-card"></article>
+        </section>
+
+        <section class="lane-section" aria-labelledby="fixing-title">
+          <div class="section-head">
+            <h2 id="fixing-title">Fixing</h2>
+            <p class="section-note">
+              Mana evaluation from Scryfall oracle text, not GIH. Colorless
+              fixers are excluded from the Colorless power/depth lane. Colored
+              duals still count in their color and pair lanes.
+            </p>
+          </div>
+          <div class="fixing-grid">
+            <article class="fixing-card">
+              <h3>Colorless fixing</h3>
+              <p class="fixing-meta" id="colorless-fixing-meta"></p>
+              <ul id="colorless-fixing-list"></ul>
+            </article>
+            <article class="fixing-card">
+              <h3>Green-based fixing</h3>
+              <p class="fixing-meta" id="green-fixing-meta"></p>
+              <ul id="green-fixing-list"></ul>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="app.js?v=2" defer></script>
+  </body>
+</html>
