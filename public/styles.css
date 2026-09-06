@@ -167,8 +167,8 @@ label {
 textarea {
   display: block;
   width: 100%;
-  min-height: 132px;
-  max-height: 38vh;
+  min-height: 112px;
+  max-height: 160px;
   resize: vertical;
   border: 1px solid var(--line);
   border-radius: 6px;

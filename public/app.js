@@ -791,6 +791,32 @@ function rankLanes(lanes) {
   return [...lanes].sort(compareLanes);
 }
 
+function monoStrength(lane) {
+  if (!lane) return 0;
+  return lane.depthCopies * 1000 + Math.max(meanPowerGih(lane), 0) * 100 + lane.copies;
+}
+
+function rankPairs(pairs, mono) {
+  const monoByCode = Object.fromEntries(mono.map((lane) => [lane.code, lane]));
+  return [...pairs].sort((a, b) => {
+    const depth = b.depthCopies - a.depthCopies;
+    if (depth) return depth;
+    const power = meanPowerGih(b) - meanPowerGih(a);
+    if (power) return power;
+    const top = (b.power[0]?.gihWr ?? -1) - (a.power[0]?.gihWr ?? -1);
+    if (top) return top;
+    const derived =
+      monoStrength(monoByCode[b.code[0]]) +
+      monoStrength(monoByCode[b.code[1]]) -
+      (monoStrength(monoByCode[a.code[0]]) + monoStrength(monoByCode[a.code[1]]));
+    return derived || b.copies - a.copies || a.order - b.order;
+  });
+}
+
+function hasPublishedSignal(lanes) {
+  return lanes.some((lane) => lane.depthCopies > 0 || lane.power.length > 0);
+}
+
 function shortPairName(code) {
   return (PAIR_NAMES[code] ?? code).replace(/ \([A-Z]+\)$/, "");
 }
@@ -842,7 +868,7 @@ function pickSplashCards(model, mainPair) {
   const candidates = model.poolCards.filter((card) => {
     if (card.colors.length === 0) return false;
     if (cardFitsLane(pairColors, card.colors)) return false;
-    if (card.isFixer && card.isLand) return false;
+    if (card.isFixer && (card.isLand || !hasGih)) return false;
     const needed = neededSplashColors(card.colors, pairColors);
     if (needed.length === 0) return false;
     if (hasGih) {
@@ -926,9 +952,14 @@ function renderDepth(lane) {
   const wrap = document.createElement("div");
   wrap.className = "depth-cell";
   const main = document.createElement("span");
-  main.textContent = `${formatInteger(lane.depthCopies)} above avg`;
   const sub = document.createElement("small");
-  sub.textContent = `${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible`;
+  if (lane.eligibleCopies === 0) {
+    main.textContent = `${formatInteger(lane.copies)} in lane`;
+    sub.textContent = "No published GIH yet";
+  } else {
+    main.textContent = `${formatInteger(lane.depthCopies)} above avg`;
+    sub.textContent = `${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible`;
+  }
   wrap.append(main, sub);
   return wrap;
 }
@@ -996,7 +1027,10 @@ function renderColorless(lane) {
     elements.colorlessCard.append(label, depth);
     return;
   }
-  depth.textContent = `${formatInteger(lane.depthCopies)} above avg · ${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible · ${formatInteger(lane.copies)} copies`;
+  depth.textContent =
+    lane.eligibleCopies === 0
+      ? `${formatInteger(lane.copies)} colorless copies · no published GIH yet`
+      : `${formatInteger(lane.depthCopies)} above avg · ${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible · ${formatInteger(lane.copies)} copies`;
   elements.colorlessCard.append(label, depth, renderPowerChips(lane.power));
 }
 
@@ -1067,17 +1101,17 @@ function renderColors(model) {
 }
 
 function renderPairs(model) {
-  const ranked = rankLanes(model.pairs);
+  const ranked = rankPairs(model.pairs, model.mono);
   const defaultCount = Math.min(defaultPairCount(), ranked.length);
   const visible = uiState.showAllPairs ? ranked : ranked.slice(0, defaultCount);
   const monoByCode = Object.fromEntries(model.mono.map((lane) => [lane.code, lane]));
+  const showWhy = hasPublishedSignal(model.mono);
 
   elements.pairList.replaceChildren();
   visible.forEach((lane) => {
     const rank = ranked.indexOf(lane) + 1;
-    elements.pairList.append(
-      renderPairCard(lane, rank, rank <= 2, describePairWhy(lane, monoByCode))
-    );
+    const why = showWhy ? describePairWhy(lane, monoByCode) : "";
+    elements.pairList.append(renderPairCard(lane, rank, rank <= 2, why));
   });
 
   renderExpandButton(elements.togglePairs, {
@@ -1133,7 +1167,7 @@ function renderFixingSummary(model) {
 }
 
 function renderSplashCards(model) {
-  const rankedPairs = rankLanes(model.pairs);
+  const rankedPairs = rankPairs(model.pairs, model.mono);
   const mainPair = rankedPairs[0];
   const runnerUp = rankedPairs[1];
   const coverage = combinedFixingCoverage(model.fixing);
@@ -1204,7 +1238,7 @@ function renderReadout(model, splashCards) {
   const topColors = rankLanes(model.mono)
     .slice(0, 2)
     .map((lane) => COLOR_NAMES[lane.code]);
-  const bestPair = rankLanes(model.pairs)[0];
+  const bestPair = rankPairs(model.pairs, model.mono)[0];
   const splashable = splashCards.filter((card) => {
     const needed = neededSplashColors(card.colors, [...bestPair.code]);
     return coverageStatus(needed, combinedFixingCoverage(model.fixing)).kind === "yes";
@@ -1219,7 +1253,11 @@ function renderReadout(model, splashCards) {
     splashBit = `${formatInteger(splashCards.length)} off-pair card${splashCards.length === 1 ? "" : "s"} to weigh`;
   }
 
-  elements.readout.textContent = `${topColors.join(" and ")} lead. Best pair: ${shortPairName(bestPair.code)}. ${splashBit}.`;
+  if (hasPublishedSignal(model.mono)) {
+    elements.readout.textContent = `${topColors.join(" and ")} lead. Best pair: ${shortPairName(bestPair.code)}. ${splashBit}.`;
+    return;
+  }
+  elements.readout.textContent = `${topColors.join(" and ")} are the largest color lanes. Best pair from that: ${shortPairName(bestPair.code)}. ${splashBit}.`;
 }
 
 function renderLaneModel(model) {
