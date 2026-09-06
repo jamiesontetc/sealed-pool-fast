@@ -44,7 +44,7 @@ async function proxy17Lands(request, response, url) {
     const upstreamResponse = await fetch(upstream, {
       headers: {
         accept: "application/json",
-        "user-agent": "Rank My Sealed local tool",
+        "user-agent": "SealedPoolFast local tool",
       },
     });
     const body = await upstreamResponse.text();
@@ -92,5 +92,5 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Rank My Sealed running at http://${HOST}:${PORT}/`);
+  console.log(`SealedPoolFast running at http://${HOST}:${PORT}/`);
 });

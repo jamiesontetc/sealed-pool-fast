@@ -1,6 +1,8 @@
-# Rank My Sealed
+# SealedPoolFast
 
-Rank My Sealed is a tiny static web app for MTG Arena **sealed pools**.
+SealedPoolFast is a tiny static web app for MTG Arena **sealed pools**.
+Live site: [https://sealed-pool-fast.vercel.app](https://sealed-pool-fast.vercel.app).
+Formerly published as **rank-my-sealed**.
 
 Paste an Arena export, choose **Sealed** or **TradSealed**, click **Analyze**,
 and the app reports color-pair / monocolor / colorless **power** and **depth**
