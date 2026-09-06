@@ -41,9 +41,10 @@ Power and depth stay empty until GIH WR is published; fixing still runs.
 
 ### Lane membership
 
-Card colors come from the 17Lands `color` string. If that string is empty
-(common for lands), the app falls back to Scryfall color identity so colored
-duals sit in the correct color and pair lanes.
+Card colors come from the 17Lands `color` string. If that string is empty and
+the card is a land, the app falls back to Scryfall color identity so colored
+duals sit in the correct color and pair lanes. Colorless non-land cards stay
+colorless.
 
 - **Mono W/U/B/R/G:** card colors ⊆ that single color. Colorless cards are
   excluded from mono lanes.

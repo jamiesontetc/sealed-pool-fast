@@ -131,8 +131,8 @@ Sideboard
 let filtersPromise;
 let lastLaneModel = null;
 const sortState = {
-  pairs: { key: "depth", dir: "desc" },
-  mono: { key: "pair", dir: "asc" },
+  pairs: { key: "order", dir: "asc" },
+  mono: { key: "order", dir: "asc" },
 };
 
 const elements = {
@@ -624,8 +624,22 @@ function getLaneColors(card, cardDataByName, scryfallByName) {
   const apiCard = cardDataByName.get(normalizeName(card.name));
   const from17 = parseColorString(apiCard?.color);
   if (from17.length > 0) return from17;
+
   const sf = scryfallByName.get(normalizeName(card.name));
-  return uniqueColors(sf?.color_identity ?? []);
+  if (!sf) return from17;
+
+  // 17Lands usually leaves lands as colorless; use identity so duals sit
+  // in the correct color / pair lanes.
+  if (isLandCard(sf)) {
+    return uniqueColors(sf.color_identity ?? []);
+  }
+
+  // Missing 17Lands row: use printed colors, not identity.
+  if (!apiCard) {
+    return uniqueColors(sf.colors ?? []);
+  }
+
+  return from17;
 }
 
 function cardFitsLane(laneColors, cardColors) {
@@ -813,20 +827,22 @@ function renderDepth(lane) {
 function sortLanes(lanes, tableKey) {
   const { key, dir } = sortState[tableKey];
   const sign = dir === "asc" ? 1 : -1;
+  const byOrder = (a, b) => (a.order - b.order) * sign;
   return [...lanes].sort((a, b) => {
+    if (key === "order") return byOrder(a, b);
     if (key === "depth") {
       return (
         (a.depthCopies - b.depthCopies) * sign ||
         (a.eligibleCopies - b.eligibleCopies) * sign ||
-        a.code.localeCompare(b.code)
+        a.order - b.order
       );
     }
     if (key === "power") {
       const aTop = a.power[0]?.gihWr ?? -1;
       const bTop = b.power[0]?.gihWr ?? -1;
-      return (aTop - bTop) * sign || a.code.localeCompare(b.code);
+      return (aTop - bTop) * sign || a.order - b.order;
     }
-    return a.label.localeCompare(b.label) * sign;
+    return a.label.localeCompare(b.label) * sign || a.order - b.order;
   });
 }
 
@@ -1013,13 +1029,15 @@ async function analyzeExport() {
       showStatus(`${error.message} Continuing without fixing details.`);
     }
 
-    const pairs = PAIR_CODES_ORDER.map((code) => ({
+    const pairs = PAIR_CODES_ORDER.map((code, order) => ({
       code,
+      order,
       label: describeLane(code),
       ...buildLaneStats(parsed.cards, [...code], cardDataByName, scryfallByName, setAverage),
     }));
-    const mono = MONO_CODES.map((code) => ({
+    const mono = MONO_CODES.map((code, order) => ({
       code,
+      order,
       label: describeLane(code),
       ...buildLaneStats(parsed.cards, [code], cardDataByName, scryfallByName, setAverage),
     }));
