@@ -8,6 +8,16 @@ Paste an Arena export, choose **Sealed** or **TradSealed**, click **Analyze**,
 and the app reports color-pair / monocolor / colorless **power** and **depth**
 from public 17Lands GIH data, plus a separate **fixing** section from Scryfall.
 
+Results are ordered for a fast sealed decision, not an equal-weight table dump:
+
+1. **Color strength** — WUBRG ranked by depth, then power. Top colors are shown
+   first; the rest sit behind “Show all colors.” Colorless is a footnote.
+2. **Best pairs** — same ranking idea, defaulting to the top 5 pairs (top 3 on
+   narrow screens) instead of all 10. Each row can include a one-line “why.”
+3. **Fixing & off-pair power** — brief fixer density/coverage, then whether
+   that coverage can splash strong cards outside the leading pair. Full fixer
+   lists stay collapsed.
+
 This is a sibling of [Rank My Draft](https://github.com/jamiesontetc/rank-my-draft).
 It uses the same stack: static `public/` files, a Vercel `/api/17lands` proxy,
 and `server.js` for local development. There is no build step.
