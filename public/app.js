@@ -130,9 +130,9 @@ Sideboard
 
 let filtersPromise;
 let lastLaneModel = null;
-const sortState = {
-  pairs: { key: "order", dir: "asc" },
-  mono: { key: "order", dir: "asc" },
+const uiState = {
+  showAllColors: false,
+  showAllPairs: false,
 };
 
 const elements = {
@@ -146,10 +146,16 @@ const elements = {
   dateRange: document.querySelector("#date-range"),
   setAvgGih: document.querySelector("#set-avg-gih"),
   poolSize: document.querySelector("#pool-size"),
+  readout: document.querySelector("#readout"),
   gihNote: document.querySelector("#gih-note"),
-  pairsTable: document.querySelector("#pairs-table"),
-  monoTable: document.querySelector("#mono-table"),
+  colorList: document.querySelector("#color-list"),
+  toggleColors: document.querySelector("#toggle-colors"),
+  pairList: document.querySelector("#pair-list"),
+  togglePairs: document.querySelector("#toggle-pairs"),
   colorlessCard: document.querySelector("#colorless-card"),
+  fixingSummary: document.querySelector("#fixing-summary"),
+  splashHeading: document.querySelector("#splash-heading"),
+  splashList: document.querySelector("#splash-list"),
   colorlessFixingMeta: document.querySelector("#colorless-fixing-meta"),
   colorlessFixingList: document.querySelector("#colorless-fixing-list"),
   greenFixingMeta: document.querySelector("#green-fixing-meta"),
@@ -766,6 +772,135 @@ function summarizeFixing(rows) {
   return { density, coverage, bands };
 }
 
+function meanPowerGih(lane) {
+  if (!lane.power?.length) return -1;
+  return lane.power.reduce((sum, card) => sum + card.gihWr, 0) / lane.power.length;
+}
+
+function compareLanes(a, b) {
+  return (
+    b.depthCopies - a.depthCopies ||
+    meanPowerGih(b) - meanPowerGih(a) ||
+    (b.power[0]?.gihWr ?? -1) - (a.power[0]?.gihWr ?? -1) ||
+    b.copies - a.copies ||
+    a.order - b.order
+  );
+}
+
+function rankLanes(lanes) {
+  return [...lanes].sort(compareLanes);
+}
+
+function monoStrength(lane) {
+  if (!lane) return 0;
+  return lane.depthCopies * 1000 + Math.max(meanPowerGih(lane), 0) * 100 + lane.copies;
+}
+
+function rankPairs(pairs, mono) {
+  const monoByCode = Object.fromEntries(mono.map((lane) => [lane.code, lane]));
+  return [...pairs].sort((a, b) => {
+    const depth = b.depthCopies - a.depthCopies;
+    if (depth) return depth;
+    const power = meanPowerGih(b) - meanPowerGih(a);
+    if (power) return power;
+    const top = (b.power[0]?.gihWr ?? -1) - (a.power[0]?.gihWr ?? -1);
+    if (top) return top;
+    const derived =
+      monoStrength(monoByCode[b.code[0]]) +
+      monoStrength(monoByCode[b.code[1]]) -
+      (monoStrength(monoByCode[a.code[0]]) + monoStrength(monoByCode[a.code[1]]));
+    return derived || b.copies - a.copies || a.order - b.order;
+  });
+}
+
+function hasPublishedSignal(lanes) {
+  return lanes.some((lane) => lane.depthCopies > 0 || lane.power.length > 0);
+}
+
+function shortPairName(code) {
+  return (PAIR_NAMES[code] ?? code).replace(/ \([A-Z]+\)$/, "");
+}
+
+function defaultPairCount() {
+  return window.matchMedia("(max-width: 480px)").matches ? 3 : 5;
+}
+
+function combinedFixingCoverage(fixing) {
+  return uniqueColors([...(fixing.colorless ?? []), ...(fixing.green ?? [])].flatMap((row) => row.coverage));
+}
+
+function describePairWhy(pair, monoByCode) {
+  const codes = [...pair.code];
+  const parts = codes.map((code) => {
+    const lane = monoByCode[code];
+    const name = COLOR_NAMES[code];
+    const other = monoByCode[codes.find((item) => item !== code)];
+    if (!lane) return name;
+    const depth = lane.depthCopies;
+    const top = lane.power[0]?.gihWr;
+    const otherDepth = other?.depthCopies ?? 0;
+    const otherTop = other?.power[0]?.gihWr ?? 0;
+    if (depth === 0 && top == null) return `thin ${name}`;
+    if (depth > otherDepth && (top ?? 0) > (otherTop ?? 0)) return `deep and strong ${name}`;
+    if (depth > otherDepth) return `deep ${name}`;
+    if ((top ?? 0) > (otherTop ?? 0)) return `strong ${name}`;
+    return name;
+  });
+  if (parts.every((part) => part.startsWith("thin "))) return "Neither color is deep yet";
+  return parts.join(" + ");
+}
+
+function neededSplashColors(cardColors, pairColors) {
+  return cardColors.filter((color) => !pairColors.includes(color));
+}
+
+function coverageStatus(needed, coverage) {
+  const enabled = needed.filter((color) => coverage.includes(color));
+  const missing = needed.filter((color) => !coverage.includes(color));
+  if (missing.length === 0) return { kind: "yes", enabled, missing };
+  if (enabled.length === 0) return { kind: "no", enabled, missing };
+  return { kind: "partial", enabled, missing };
+}
+
+function pickSplashCards(model, mainPair) {
+  const pairColors = [...mainPair.code];
+  const hasGih = model.poolCards.some((card) => card.gihWr != null);
+  const candidates = model.poolCards.filter((card) => {
+    if (card.colors.length === 0) return false;
+    if (cardFitsLane(pairColors, card.colors)) return false;
+    if (card.isFixer && (card.isLand || !hasGih)) return false;
+    const needed = neededSplashColors(card.colors, pairColors);
+    if (needed.length === 0) return false;
+    if (hasGih) {
+      if (card.gihWr == null) {
+        return card.rarity === "rare" || card.rarity === "mythic";
+      }
+      if (model.setAverage != null) return card.gihWr > model.setAverage;
+      return true;
+    }
+    return card.rarity === "rare" || card.rarity === "mythic" || card.rarity === "special";
+  });
+
+  candidates.sort((a, b) => {
+    if (a.gihWr != null && b.gihWr != null) {
+      return b.gihWr - a.gihWr || a.name.localeCompare(b.name);
+    }
+    if (a.gihWr != null) return -1;
+    if (b.gihWr != null) return 1;
+    const rarityRank = { mythic: 0, special: 1, rare: 2 };
+    return (rarityRank[a.rarity] ?? 9) - (rarityRank[b.rarity] ?? 9) || a.name.localeCompare(b.name);
+  });
+
+  return candidates.slice(0, 8);
+}
+
+function formatBandSummary(bands) {
+  return Object.entries(bands)
+    .filter(([, count]) => count > 0)
+    .map(([band, count]) => `${count} ${band.toLowerCase()}`)
+    .join(", ");
+}
+
 function setLoading(isLoading) {
   elements.analyzeButton.disabled = isLoading;
   elements.analyzeButton.textContent = isLoading ? "Analyzing..." : "Analyze";
@@ -817,65 +952,86 @@ function renderDepth(lane) {
   const wrap = document.createElement("div");
   wrap.className = "depth-cell";
   const main = document.createElement("span");
-  main.textContent = `${formatInteger(lane.depthCopies)} above avg`;
   const sub = document.createElement("small");
-  sub.textContent = `${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible`;
+  if (lane.eligibleCopies === 0) {
+    main.textContent = `${formatInteger(lane.copies)} in lane`;
+    sub.textContent = "No published GIH yet";
+  } else {
+    main.textContent = `${formatInteger(lane.depthCopies)} above avg`;
+    sub.textContent = `${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible`;
+  }
   wrap.append(main, sub);
   return wrap;
 }
 
-function sortLanes(lanes, tableKey) {
-  const { key, dir } = sortState[tableKey];
-  const sign = dir === "asc" ? 1 : -1;
-  const byOrder = (a, b) => (a.order - b.order) * sign;
-  return [...lanes].sort((a, b) => {
-    if (key === "order") return byOrder(a, b);
-    if (key === "depth") {
-      return (
-        (a.depthCopies - b.depthCopies) * sign ||
-        (a.eligibleCopies - b.eligibleCopies) * sign ||
-        a.order - b.order
-      );
-    }
-    if (key === "power") {
-      const aTop = a.power[0]?.gihWr ?? -1;
-      const bTop = b.power[0]?.gihWr ?? -1;
-      return (aTop - bTop) * sign || a.order - b.order;
-    }
-    return a.label.localeCompare(b.label) * sign || a.order - b.order;
-  });
+function renderRankHead(lane, rank, titleText, pipColors) {
+  const head = document.createElement("div");
+  head.className = "rank-card-head";
+
+  const rankEl = document.createElement("span");
+  rankEl.className = "rank-index";
+  rankEl.textContent = String(rank);
+
+  const title = document.createElement("div");
+  title.className = "rank-title";
+  title.append(renderPips(pipColors));
+  const name = document.createElement("strong");
+  name.textContent = titleText;
+  title.append(name);
+
+  head.append(rankEl, title, renderDepth(lane));
+  return head;
 }
 
-function renderLaneTable(tableEl, lanes, tableKey) {
-  tableEl.replaceChildren();
-  for (const lane of sortLanes(lanes, tableKey)) {
-    const tr = document.createElement("tr");
-    const pairTd = document.createElement("td");
-    const pair = document.createElement("div");
-    pair.className = "pair-cell";
-    pair.append(renderPips([...lane.code]));
-    const name = document.createElement("span");
-    name.textContent = lane.label;
-    pair.append(name);
-    pairTd.append(pair);
+function renderColorCard(lane, rank, isLead) {
+  const article = document.createElement("article");
+  article.className = `rank-card rank-card-color${isLead ? " is-lead" : ""}`;
+  article.dataset.color = lane.code;
+  article.append(
+    renderRankHead(lane, rank, COLOR_NAMES[lane.code] ?? lane.label, [lane.code]),
+    renderPowerChips(lane.power)
+  );
+  return article;
+}
 
-    const depthTd = document.createElement("td");
-    depthTd.append(renderDepth(lane));
-
-    const powerTd = document.createElement("td");
-    powerTd.append(renderPowerChips(lane.power));
-
-    tr.append(pairTd, depthTd, powerTd);
-    tableEl.append(tr);
+function renderPairCard(lane, rank, isLead, why) {
+  const article = document.createElement("article");
+  article.className = `rank-card${isLead ? " is-lead" : ""}`;
+  article.append(renderRankHead(lane, rank, shortPairName(lane.code), [...lane.code]));
+  if (why) {
+    const whyLine = document.createElement("p");
+    whyLine.className = "why-line";
+    whyLine.textContent = why;
+    article.append(whyLine);
   }
+  article.append(renderPowerChips(lane.power));
+  return article;
+}
+
+function renderExpandButton(button, { hidden, expanded, moreLabel, fewerLabel }) {
+  if (!button) return;
+  button.classList.toggle("hidden", hidden);
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  button.textContent = expanded ? fewerLabel : moreLabel;
 }
 
 function renderColorless(lane) {
   elements.colorlessCard.replaceChildren();
+  const label = document.createElement("p");
+  label.className = "footnote-label";
+  label.textContent = "Colorless footnote";
   const depth = document.createElement("p");
   depth.className = "fixing-meta";
-  depth.textContent = `${formatInteger(lane.depthCopies)} above avg · ${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible · ${formatInteger(lane.copies)} copies in lane`;
-  elements.colorlessCard.append(depth, renderPowerChips(lane.power));
+  if (lane.copies === 0) {
+    depth.textContent = "No colorless payoffs in this pool (fixers are listed under splash).";
+    elements.colorlessCard.append(label, depth);
+    return;
+  }
+  depth.textContent =
+    lane.eligibleCopies === 0
+      ? `${formatInteger(lane.copies)} colorless copies · no published GIH yet`
+      : `${formatInteger(lane.depthCopies)} above avg · ${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible · ${formatInteger(lane.copies)} copies`;
+  elements.colorlessCard.append(label, depth, renderPowerChips(lane.power));
 }
 
 function renderFixingBucket(metaEl, listEl, rows) {
@@ -925,23 +1081,195 @@ function renderFixingBucket(metaEl, listEl, rows) {
   }
 }
 
-function updateSortButtons() {
-  for (const button of document.querySelectorAll(".sort-button")) {
-    const table = button.dataset.table;
-    const active = sortState[table]?.key === button.dataset.sort;
-    button.dataset.active = active ? "true" : "false";
-    button.dataset.dir = active && sortState[table].dir === "asc" ? "↑" : "↓";
+function renderColors(model) {
+  const ranked = rankLanes(model.mono);
+  const leadCount = Math.min(3, ranked.length);
+  const visible = uiState.showAllColors ? ranked : ranked.slice(0, leadCount);
+
+  elements.colorList.replaceChildren();
+  visible.forEach((lane, index) => {
+    const rank = ranked.indexOf(lane) + 1;
+    elements.colorList.append(renderColorCard(lane, rank, rank <= leadCount));
+  });
+
+  renderExpandButton(elements.toggleColors, {
+    hidden: ranked.length <= leadCount,
+    expanded: uiState.showAllColors,
+    moreLabel: `Show all ${ranked.length} colors`,
+    fewerLabel: "Show top colors",
+  });
+}
+
+function renderPairs(model) {
+  const ranked = rankPairs(model.pairs, model.mono);
+  const defaultCount = Math.min(defaultPairCount(), ranked.length);
+  const visible = uiState.showAllPairs ? ranked : ranked.slice(0, defaultCount);
+  const monoByCode = Object.fromEntries(model.mono.map((lane) => [lane.code, lane]));
+  const showWhy = hasPublishedSignal(model.mono);
+
+  elements.pairList.replaceChildren();
+  visible.forEach((lane) => {
+    const rank = ranked.indexOf(lane) + 1;
+    const why = showWhy ? describePairWhy(lane, monoByCode) : "";
+    elements.pairList.append(renderPairCard(lane, rank, rank <= 2, why));
+  });
+
+  renderExpandButton(elements.togglePairs, {
+    hidden: ranked.length <= defaultCount,
+    expanded: uiState.showAllPairs,
+    moreLabel: `Show all ${ranked.length} pairs`,
+    fewerLabel: "Show top pairs",
+  });
+}
+
+function renderFixingSummary(model) {
+  const colorless = summarizeFixing(model.fixing.colorless);
+  const green = summarizeFixing(model.fixing.green);
+  const coverage = combinedFixingCoverage(model.fixing);
+
+  const colorlessCard = document.createElement("article");
+  const colorlessTitle = document.createElement("h3");
+  colorlessTitle.textContent = "Colorless fixing";
+  const colorlessBody = document.createElement("p");
+  const colorlessBands = formatBandSummary(colorless.bands);
+  colorlessBody.textContent =
+    colorless.density === 0
+      ? "No colorless fixers."
+      : `${formatInteger(colorless.density)} copies · coverage ${colorless.coverage.join("") || "none"}${
+          colorlessBands ? ` · ${colorlessBands}` : ""
+        }`;
+  colorlessCard.append(colorlessTitle, colorlessBody);
+
+  const greenCard = document.createElement("article");
+  const greenTitle = document.createElement("h3");
+  greenTitle.textContent = "Green fixing";
+  const greenBody = document.createElement("p");
+  const greenBands = formatBandSummary(green.bands);
+  greenBody.textContent =
+    green.density === 0
+      ? "No green-based fixers."
+      : `${formatInteger(green.density)} copies · coverage ${green.coverage.join("") || "none"}${
+          greenBands ? ` · ${greenBands}` : ""
+        }`;
+  greenCard.append(greenTitle, greenBody);
+
+  const combined = document.createElement("article");
+  const combinedTitle = document.createElement("h3");
+  combinedTitle.textContent = "Enabled colors";
+  const combinedBody = document.createElement("p");
+  combinedBody.textContent =
+    coverage.length === 0
+      ? "Current fixers do not clearly enable extra colors."
+      : `Together, fixers enable ${coverage.join("")}.`;
+  combined.append(combinedTitle, combinedBody);
+
+  elements.fixingSummary.replaceChildren(colorlessCard, greenCard, combined);
+}
+
+function renderSplashCards(model) {
+  const rankedPairs = rankPairs(model.pairs, model.mono);
+  const mainPair = rankedPairs[0];
+  const runnerUp = rankedPairs[1];
+  const coverage = combinedFixingCoverage(model.fixing);
+  const splashCards = pickSplashCards(model, mainPair);
+
+  elements.splashHeading.textContent = `Off-pair power vs ${shortPairName(mainPair.code)}`;
+  elements.splashList.replaceChildren();
+
+  if (splashCards.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-note";
+    empty.textContent = model.gihPublished
+      ? `No high-GIH cards sit outside ${shortPairName(mainPair.code)}. Stay on-pair, or expand the fixer lists below.`
+      : `No off-color rares or mythics sit outside ${shortPairName(mainPair.code)}. Check fixer lists if you still want a splash.`;
+    elements.splashList.append(empty);
+    return splashCards;
   }
+
+  for (const card of splashCards) {
+    const needed = neededSplashColors(card.colors, [...mainPair.code]);
+    const status = coverageStatus(needed, coverage);
+    const article = document.createElement("article");
+    article.className = "splash-card";
+
+    const head = document.createElement("div");
+    head.className = "splash-card-head";
+    const title = document.createElement("strong");
+    title.append(renderPips(card.colors));
+    title.append(
+      document.createTextNode(card.quantity > 1 ? `${card.quantity} ${card.name}` : card.name)
+    );
+    const meta = document.createElement("small");
+    if (card.gihWr != null) {
+      meta.textContent = `${formatPercent(card.gihWr)} GIH`;
+    } else if (card.rarity) {
+      meta.textContent = `${card.rarity} · GIH unpublished`;
+    } else {
+      meta.textContent = "GIH unpublished";
+    }
+    head.append(title, meta);
+
+    const need = document.createElement("p");
+    need.className = "splash-need";
+    const bits = [`Needs ${needed.join("")} off ${shortPairName(mainPair.code)}`];
+    if (runnerUp && cardFitsLane([...runnerUp.code], card.colors)) {
+      bits.push(`also fits ${shortPairName(runnerUp.code)}`);
+    }
+    need.textContent = bits.join(" · ");
+
+    const pill = document.createElement("span");
+    pill.className = `coverage-pill coverage-${status.kind}`;
+    if (status.kind === "yes") {
+      pill.textContent = `Coverage can enable ${needed.join("")}`;
+    } else if (status.kind === "partial") {
+      pill.textContent = `Partial — ${status.enabled.join("")} enabled, missing ${status.missing.join("")}`;
+    } else {
+      pill.textContent = `Coverage does not enable ${needed.join("")}`;
+    }
+
+    article.append(head, need, pill);
+    elements.splashList.append(article);
+  }
+
+  return splashCards;
+}
+
+function renderReadout(model, splashCards) {
+  const topColors = rankLanes(model.mono)
+    .slice(0, 2)
+    .map((lane) => COLOR_NAMES[lane.code]);
+  const bestPair = rankPairs(model.pairs, model.mono)[0];
+  const splashable = splashCards.filter((card) => {
+    const needed = neededSplashColors(card.colors, [...bestPair.code]);
+    return coverageStatus(needed, combinedFixingCoverage(model.fixing)).kind === "yes";
+  }).length;
+
+  let splashBit = "no clear splash from current coverage";
+  if (splashCards.length === 0) {
+    splashBit = "no off-pair bombs to weigh";
+  } else if (splashable > 0) {
+    splashBit = `${formatInteger(splashable)} splashable off-pair card${splashable === 1 ? "" : "s"}`;
+  } else {
+    splashBit = `${formatInteger(splashCards.length)} off-pair card${splashCards.length === 1 ? "" : "s"} to weigh`;
+  }
+
+  if (hasPublishedSignal(model.mono)) {
+    elements.readout.textContent = `${topColors.join(" and ")} lead. Best pair: ${shortPairName(bestPair.code)}. ${splashBit}.`;
+    return;
+  }
+  elements.readout.textContent = `${topColors.join(" and ")} are the largest color lanes. Best pair from that: ${shortPairName(bestPair.code)}. ${splashBit}.`;
 }
 
 function renderLaneModel(model) {
   lastLaneModel = model;
-  renderLaneTable(elements.pairsTable, model.pairs, "pairs");
-  renderLaneTable(elements.monoTable, model.mono, "mono");
+  renderColors(model);
+  renderPairs(model);
   renderColorless(model.colorless);
+  renderFixingSummary(model);
+  const splashCards = renderSplashCards(model);
+  renderReadout(model, splashCards);
   renderFixingBucket(elements.colorlessFixingMeta, elements.colorlessFixingList, model.fixing.colorless);
   renderFixingBucket(elements.greenFixingMeta, elements.greenFixingList, model.fixing.green);
-  updateSortButtons();
 }
 
 function renderResults({
@@ -1049,6 +1377,26 @@ async function analyzeExport() {
       }),
     };
     const fixing = buildFixingBuckets(parsed.cards, cardDataByName, scryfallByName);
+    const poolCards = parsed.cards
+      .filter((card) => !isBasicLand(card, scryfallByName))
+      .map((card) => {
+        const apiCard = cardDataByName.get(normalizeName(card.name));
+        const sf = scryfallByName.get(normalizeName(card.name));
+        const fixingRow = classifyFixing(card, scryfallByName);
+        return {
+          name: card.name,
+          quantity: card.quantity,
+          colors: getLaneColors(card, cardDataByName, scryfallByName),
+          gihWr:
+            typeof apiCard?.ever_drawn_win_rate === "number" ? apiCard.ever_drawn_win_rate : null,
+          rarity: sf?.rarity ?? null,
+          isFixer: Boolean(fixingRow),
+          isLand: Boolean(sf && isLandCard(sf)),
+        };
+      });
+
+    uiState.showAllColors = false;
+    uiState.showAllPairs = false;
 
     renderResults({
       setCode,
@@ -1058,8 +1406,17 @@ async function analyzeExport() {
       setAverage,
       poolCopies: parsed.poolCopies,
       gihPublishedCount,
-      model: { pairs, mono, colorless, fixing },
+      model: {
+        pairs,
+        mono,
+        colorless,
+        fixing,
+        poolCards,
+        setAverage,
+        gihPublished: gihPublishedCount > 0,
+      },
     });
+    elements.results.scrollIntoView({ behavior: "smooth", block: "start" });
 
     if (gihPublishedCount === 0) {
       showStatus("Done. Card-level GIH is unpublished for this window; fixing and lane membership still ran.");
@@ -1080,19 +1437,16 @@ elements.sampleButton.addEventListener("click", () => {
   showStatus("Sample sealed pool loaded.");
 });
 
-for (const button of document.querySelectorAll(".sort-button")) {
-  button.addEventListener("click", () => {
-    const table = button.dataset.table;
-    const key = button.dataset.sort;
-    if (!lastLaneModel || !sortState[table]) return;
-    if (sortState[table].key === key) {
-      sortState[table].dir = sortState[table].dir === "asc" ? "desc" : "asc";
-    } else {
-      sortState[table] = {
-        key,
-        dir: key === "pair" ? "asc" : "desc",
-      };
-    }
-    renderLaneModel(lastLaneModel);
-  });
-}
+elements.toggleColors.addEventListener("click", () => {
+  uiState.showAllColors = !uiState.showAllColors;
+  if (lastLaneModel) renderLaneModel(lastLaneModel);
+});
+
+elements.togglePairs.addEventListener("click", () => {
+  uiState.showAllPairs = !uiState.showAllPairs;
+  if (lastLaneModel) renderLaneModel(lastLaneModel);
+});
+
+window.matchMedia("(max-width: 480px)").addEventListener("change", () => {
+  if (lastLaneModel) renderLaneModel(lastLaneModel);
+});

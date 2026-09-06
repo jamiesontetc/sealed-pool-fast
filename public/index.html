@@ -6,22 +6,19 @@
     <title>SealedPoolFast</title>
     <meta
       name="description"
-      content="SealedPoolFast: paste an MTG Arena sealed pool and analyze color-pair power, depth, and fixing using 17Lands Sealed GIH data."
+      content="SealedPoolFast: paste an MTG Arena sealed pool and see which colors and pairs have the most power and depth, then whether fixing can splash off-pair cards."
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="shell">
       <section class="intro" aria-labelledby="app-title">
-        <div>
-          <p class="eyebrow">17Lands sealed snapshot</p>
-          <h1 id="app-title">SealedPoolFast</h1>
-        </div>
+        <p class="eyebrow">17Lands sealed snapshot</p>
+        <h1 id="app-title">SealedPoolFast</h1>
         <p class="source-note">
-          Paste an MTG Arena sealed pool. Results use public 17Lands
-          <strong>Sealed</strong> or <strong>TradSealed</strong> GIH data, plus
-          Scryfall oracle text for fixing. Please keep this 17Lands attribution
-          visible.
+          Paste an Arena sealed pool. Uses public 17Lands
+          <strong>Sealed</strong> or <strong>TradSealed</strong> GIH, plus
+          Scryfall for fixing. Please keep this 17Lands attribution visible.
         </p>
       </section>
 
@@ -55,7 +52,7 @@
       </section>
 
       <section id="results" class="results hidden" aria-live="polite">
-        <div class="summary-grid">
+        <div class="summary-bar">
           <article>
             <span>Set</span>
             <strong id="set-name">-</strong>
@@ -65,7 +62,7 @@
             <strong id="format-name">-</strong>
           </article>
           <article>
-            <span>Date Range</span>
+            <span>Window</span>
             <strong id="date-range">-</strong>
           </article>
           <article>
@@ -73,118 +70,84 @@
             <strong id="set-avg-gih">-</strong>
           </article>
           <article>
-            <span>Pool Size</span>
+            <span>Pool</span>
             <strong id="pool-size">-</strong>
           </article>
         </div>
 
+        <p id="readout" class="readout"></p>
         <p id="gih-note" class="gih-note hidden"></p>
 
-        <section class="lane-section" aria-labelledby="pairs-title">
-          <div class="section-head">
-            <h2 id="pairs-title">Color Pairs</h2>
-            <p class="section-note">
-              Depth is copies with GIH WR above the set average. Power is the
-              top 3 unique cards by GIH WR. Pair lanes include the two monocolor
-              cards plus the gold pair.
-            </p>
-          </div>
-          <div class="table-wrap">
-            <table class="lane-table">
-              <thead>
-                <tr>
-                  <th scope="col">
-                    <button type="button" class="sort-button" data-sort="pair" data-table="pairs">
-                      Pair
-                    </button>
-                  </th>
-                  <th scope="col">
-                    <button type="button" class="sort-button" data-sort="depth" data-table="pairs">
-                      Depth
-                    </button>
-                  </th>
-                  <th scope="col">
-                    <button type="button" class="sort-button" data-sort="power" data-table="pairs">
-                      Top 3 Power
-                    </button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody id="pairs-table"></tbody>
-            </table>
-          </div>
+        <section class="step" aria-labelledby="colors-title">
+          <p class="step-kicker">1 · Color strength</p>
+          <h2 id="colors-title">Which colors have the most power and depth?</h2>
+          <p class="section-note">
+            Ranked by depth (copies above set-avg GIH), then power (top 3 by
+            GIH). Top colors are shown first.
+          </p>
+          <div id="color-list" class="rank-list"></div>
+          <button
+            id="toggle-colors"
+            class="expand-button hidden"
+            type="button"
+            aria-expanded="false"
+            aria-controls="color-list"
+          >
+            Show all colors
+          </button>
+          <article id="colorless-card" class="footnote-card"></article>
         </section>
 
-        <section class="lane-section" aria-labelledby="mono-title">
-          <div class="section-head">
-            <h2 id="mono-title">Monocolor</h2>
-            <p class="section-note">
-              A card belongs to a mono lane when its 17Lands colors are a subset
-              of that single color. Colorless cards are excluded here.
-            </p>
-          </div>
-          <div class="table-wrap">
-            <table class="lane-table">
-              <thead>
-                <tr>
-                  <th scope="col">
-                    <button type="button" class="sort-button" data-sort="pair" data-table="mono">
-                      Color
-                    </button>
-                  </th>
-                  <th scope="col">
-                    <button type="button" class="sort-button" data-sort="depth" data-table="mono">
-                      Depth
-                    </button>
-                  </th>
-                  <th scope="col">
-                    <button type="button" class="sort-button" data-sort="power" data-table="mono">
-                      Top 3 Power
-                    </button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody id="mono-table"></tbody>
-            </table>
-          </div>
+        <section class="step" aria-labelledby="pairs-title">
+          <p class="step-kicker">2 · Best pairs</p>
+          <h2 id="pairs-title">Which color pairs make sense from that?</h2>
+          <p class="section-note">
+            Pair lanes still include both monocolors plus the gold pair. Default
+            list is the best few, not all ten.
+          </p>
+          <div id="pair-list" class="rank-list"></div>
+          <button
+            id="toggle-pairs"
+            class="expand-button hidden"
+            type="button"
+            aria-expanded="false"
+            aria-controls="pair-list"
+          >
+            Show all pairs
+          </button>
         </section>
 
-        <section class="lane-section" aria-labelledby="colorless-title">
-          <div class="section-head">
-            <h2 id="colorless-title">Colorless</h2>
-            <p class="section-note">
-              Artifacts and other cards with no WUBRG colors. Colorless fixers
-              are listed under Fixing instead.
-            </p>
-          </div>
-          <article id="colorless-card" class="lane-card"></article>
-        </section>
-
-        <section class="lane-section" aria-labelledby="fixing-title">
-          <div class="section-head">
-            <h2 id="fixing-title">Fixing</h2>
-            <p class="section-note">
-              Mana evaluation from Scryfall oracle text, not GIH. Colorless
-              fixers are excluded from the Colorless power/depth lane. Colored
-              duals still count in their color and pair lanes.
-            </p>
-          </div>
-          <div class="fixing-grid">
-            <article class="fixing-card">
-              <h3>Colorless fixing</h3>
-              <p class="fixing-meta" id="colorless-fixing-meta"></p>
-              <ul id="colorless-fixing-list"></ul>
-            </article>
-            <article class="fixing-card">
-              <h3>Green-based fixing</h3>
-              <p class="fixing-meta" id="green-fixing-meta"></p>
-              <ul id="green-fixing-list"></ul>
-            </article>
-          </div>
+        <section class="step" aria-labelledby="splash-title">
+          <p class="step-kicker">3 · Fixing &amp; splash</p>
+          <h2 id="splash-title">
+            How does fixing support strong cards not in the main pair?
+          </h2>
+          <p class="section-note">
+            Mana evaluation from Scryfall oracle text, not GIH. Colored duals
+            still count in their color and pair lanes.
+          </p>
+          <div id="fixing-summary" class="fixing-summary"></div>
+          <h3 id="splash-heading">Off-pair power</h3>
+          <div id="splash-list" class="splash-list"></div>
+          <details class="fixer-details">
+            <summary>Colorless and green fixer lists</summary>
+            <div class="fixing-grid">
+              <article class="fixing-card">
+                <h3>Colorless fixing</h3>
+                <p class="fixing-meta" id="colorless-fixing-meta"></p>
+                <ul id="colorless-fixing-list"></ul>
+              </article>
+              <article class="fixing-card">
+                <h3>Green-based fixing</h3>
+                <p class="fixing-meta" id="green-fixing-meta"></p>
+                <ul id="green-fixing-list"></ul>
+              </article>
+            </div>
+          </details>
         </section>
       </section>
     </main>
 
-    <script src="app.js?v=2" defer></script>
+    <script src="app.js?v=4" defer></script>
   </body>
 </html>
