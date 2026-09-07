@@ -1487,8 +1487,9 @@ function gihNoteText({ setCache, setCodes, gihPublishedCount, unattributed }) {
   const bits = [];
 
   if (gihPublishedCount === 0 && unpublishedSets.length > 0 && failedSets.length === 0) {
+    const windowPhrase = setCodes.length > 1 ? "these windows" : "this window";
     bits.push(
-      "17Lands has games for this window but has not published card-level GIH WR yet (sample sizes are below their display threshold). Power and depth will fill in as more Sealed data lands. Fixing still uses Scryfall."
+      `17Lands has games for ${windowPhrase} but has not published card-level GIH WR yet (sample sizes are below their display threshold). Power and depth will fill in as more Sealed data lands. Fixing still uses Scryfall.`
     );
   } else if (unpublishedSets.length > 0 && unpublishedSets.length < setCodes.length) {
     bits.push(
