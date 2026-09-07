@@ -141,9 +141,11 @@ const elements = {
   sampleButton: document.querySelector("#sample-button"),
   status: document.querySelector("#status"),
   results: document.querySelector("#results"),
+  setLabel: document.querySelector("#set-label"),
   setName: document.querySelector("#set-name"),
   formatName: document.querySelector("#format-name"),
   dateRange: document.querySelector("#date-range"),
+  setAvgLabel: document.querySelector("#set-avg-label"),
   setAvgGih: document.querySelector("#set-avg-gih"),
   poolSize: document.querySelector("#pool-size"),
   readout: document.querySelector("#readout"),
@@ -231,7 +233,6 @@ function formatInteger(value) {
 
 function parseArenaExport(text) {
   const cards = [];
-  const setCounts = new Map();
   const linePattern = /^\s*(\d+)\s+(.+?)(?:\s+\(([A-Z0-9]{2,8})\)\s+\d+)?\s*$/i;
 
   for (const line of text.split(/\r?\n/)) {
@@ -246,9 +247,6 @@ function parseArenaExport(text) {
     const name = match[2].trim();
     const setCode = match[3]?.toUpperCase();
     cards.push({ quantity, name, setCode });
-    if (setCode) {
-      setCounts.set(setCode, (setCounts.get(setCode) ?? 0) + quantity);
-    }
   }
 
   if (cards.length === 0) {
@@ -257,24 +255,37 @@ function parseArenaExport(text) {
     );
   }
 
-  const setCode = [...setCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
   const poolCopies = cards.reduce((sum, card) => sum + card.quantity, 0);
-  return { cards: mergeCardsByName(cards), setCode, poolCopies };
+  return { cards: mergePoolCards(cards), poolCopies };
 }
 
-function mergeCardsByName(cards) {
-  const byName = new Map();
+function mergePoolCards(cards) {
+  const byKey = new Map();
   for (const card of cards) {
-    const key = normalizeName(card.name);
-    const existing = byName.get(key);
+    const key = `${normalizeName(card.name)}|${card.setCode ?? ""}`;
+    const existing = byKey.get(key);
     if (existing) {
       existing.quantity += card.quantity;
-      if (!existing.setCode && card.setCode) existing.setCode = card.setCode;
     } else {
-      byName.set(key, { ...card });
+      byKey.set(key, { ...card });
     }
   }
-  return [...byName.values()];
+  return [...byKey.values()];
+}
+
+function nonBasicSetCounts(cards) {
+  const counts = new Map();
+  for (const card of cards) {
+    if (!card.setCode || isBasicLand(card)) continue;
+    counts.set(card.setCode, (counts.get(card.setCode) ?? 0) + card.quantity);
+  }
+  return counts;
+}
+
+function orderedSetCodesFromCounts(counts) {
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([setCode]) => setCode);
 }
 
 function isBasicLand(card, scryfallByName = new Map()) {
@@ -412,7 +423,9 @@ async function findMostRecentAvailableRange(setCode, format, preferredRange, onP
     searchRange = previousChunk;
 
     if (checkedWindows % 3 === 0) {
-      onProgress?.(`Searching older ${formatLabel(format)} data near ${searchRange.endDate}...`);
+      onProgress?.(
+        `Searching older ${formatLabel(format)} data for ${setCode} near ${searchRange.endDate}...`
+      );
     }
   }
 }
@@ -461,6 +474,176 @@ async function inferSetFromCards(cards, format, range) {
     return bestMatch;
   }
   throw new Error("Could not infer the set. Try pasting an Arena export that includes set codes.");
+}
+
+function setSupportsFormat(filters, setCode, format) {
+  const formats = filters.formats_by_expansion?.[setCode] ?? [];
+  return formats.includes(format);
+}
+
+function lookupSetEntry(card, setCache) {
+  if (card.setCode && setCache.has(card.setCode)) {
+    return setCache.get(card.setCode);
+  }
+  return null;
+}
+
+function lookupApiCard(card, setCache) {
+  const name = normalizeName(card.name);
+  const entry = lookupSetEntry(card, setCache);
+  const direct = entry?.cardDataByName.get(name);
+  if (direct) return direct;
+  return null;
+}
+
+function fetchingSetsStatus(setCodes) {
+  return `Fetching ${setCodes.join("… ")}…`;
+}
+
+async function loadSetRatings(setCode, format, preferredRange, onProgress, options = {}) {
+  const filters = await fetchFilters();
+  const supported = setSupportsFormat(filters, setCode, format);
+  let range = preferredRange;
+  let fallbackUsed = false;
+
+  if (supported) {
+    const found = await findMostRecentAvailableRange(setCode, format, preferredRange, onProgress);
+    range = found.range;
+    fallbackUsed = found.fallbackUsed;
+  }
+
+  if (options.announceLoading !== false) {
+    onProgress?.(`Loading ${setCode} card ratings...`);
+  }
+
+  const cardData = await fetchCardRatings({
+    setCode,
+    format,
+    startDate: range.startDate,
+    endDate: range.endDate,
+  });
+
+  return {
+    setCode,
+    range,
+    fallbackUsed,
+    cardData: cardData ?? [],
+    cardDataByName: buildCardDataMap(cardData),
+    setAverage: calculateSetAverage(cardData),
+    gihPublishedCount: (cardData ?? []).filter(
+      (card) => typeof card.ever_drawn_win_rate === "number"
+    ).length,
+    error: null,
+  };
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return results;
+}
+
+async function loadRatingsForSets(setCodes, format, preferredRange, onProgress) {
+  const setCache = new Map();
+  const announceLoading = setCodes.length === 1;
+  const results = await mapWithConcurrency(setCodes, 3, async (setCode) => {
+    try {
+      return await loadSetRatings(setCode, format, preferredRange, onProgress, {
+        announceLoading,
+      });
+    } catch (error) {
+      return {
+        setCode,
+        range: preferredRange,
+        fallbackUsed: false,
+        cardData: [],
+        cardDataByName: new Map(),
+        setAverage: null,
+        gihPublishedCount: 0,
+        error: error.message,
+      };
+    }
+  });
+
+  for (const entry of results) {
+    setCache.set(entry.setCode, entry);
+  }
+  return setCache;
+}
+
+function attributeCardsToFetchedSets(cards, setCache) {
+  const preferredSets = [...setCache.keys()];
+  const unattributed = [];
+
+  for (const card of cards) {
+    if (card.setCode || isBasicLand(card)) continue;
+    const name = normalizeName(card.name);
+    const matches = preferredSets.filter((code) => setCache.get(code).cardDataByName.has(name));
+    if (matches.length === 1) {
+      card.setCode = matches[0];
+    } else {
+      unattributed.push(card);
+    }
+  }
+
+  return unattributed;
+}
+
+function assignSetCode(cards, setCode) {
+  for (const card of cards) {
+    if (!card.setCode) card.setCode = setCode;
+  }
+}
+
+function formatSetName(setCode) {
+  return `${SET_NAMES[setCode] ?? setCode} (${setCode})`;
+}
+
+function describeSetList(setCodes) {
+  if (setCodes.length === 1) return formatSetName(setCodes[0]);
+  return `${setCodes.join(", ")} (${setCodes.length})`;
+}
+
+function describeDateWindows(setCache, setCodes) {
+  const entries = setCodes.map((code) => setCache.get(code)).filter(Boolean);
+  if (entries.length === 0) return "—";
+
+  const keyOf = (entry) =>
+    `${entry.range.startDate}|${entry.range.endDate}|${entry.fallbackUsed ? "1" : "0"}`;
+  const uniqueKeys = new Set(entries.map(keyOf));
+  if (uniqueKeys.size === 1) {
+    const entry = entries[0];
+    return `${entry.range.startDate} to ${entry.range.endDate}${
+      entry.fallbackUsed ? " (most recent available)" : ""
+    }`;
+  }
+
+  return entries
+    .map((entry) => {
+      const stamp = `${entry.range.startDate.slice(5)}–${entry.range.endDate.slice(5)}`;
+      return entry.fallbackUsed ? `${entry.setCode} ${stamp}*` : `${entry.setCode} ${stamp}`;
+    })
+    .join(" · ");
+}
+
+function describeSetAverages(setCache, setCodes) {
+  if (setCodes.length === 1) {
+    return formatPercent(setCache.get(setCodes[0])?.setAverage ?? null);
+  }
+  return setCodes
+    .map((code) => `${code} ${formatPercent(setCache.get(code)?.setAverage ?? null)}`)
+    .join(" · ");
 }
 
 function sleep(ms) {
@@ -626,8 +809,7 @@ function coverageFromCard(sf) {
   return uniqueColors(sf?.color_identity ?? []);
 }
 
-function getLaneColors(card, cardDataByName, scryfallByName) {
-  const apiCard = cardDataByName.get(normalizeName(card.name));
+function getLaneColors(card, apiCard, scryfallByName) {
   const from17 = parseColorString(apiCard?.color);
   if (from17.length > 0) return from17;
 
@@ -696,13 +878,32 @@ function calculateSetAverage(cardData) {
   return rates.reduce((sum, value) => sum + value, 0) / rates.length;
 }
 
-function buildLaneStats(cards, laneColors, cardDataByName, scryfallByName, setAverage, options = {}) {
+function enrichPoolCards(cards, setCache, scryfallByName) {
+  return cards.map((card) => {
+    const apiCard = lookupApiCard(card, setCache);
+    const entry = lookupSetEntry(card, setCache);
+    const sf = scryfallByName.get(normalizeName(card.name));
+    const fixingRow = classifyFixing(card, scryfallByName);
+    return {
+      ...card,
+      colors: getLaneColors(card, apiCard, scryfallByName),
+      gihWr: typeof apiCard?.ever_drawn_win_rate === "number" ? apiCard.ever_drawn_win_rate : null,
+      games: apiCard?.ever_drawn_game_count ?? null,
+      setAverage: entry?.setAverage ?? null,
+      rarity: sf?.rarity ?? null,
+      isFixer: Boolean(fixingRow),
+      isLand: Boolean(sf && isLandCard(sf)),
+    };
+  });
+}
+
+function buildLaneStats(cards, laneColors, scryfallByName, options = {}) {
   const excludeColorlessFixers = Boolean(options.excludeColorlessFixers);
   const members = [];
 
   for (const card of cards) {
     if (isBasicLand(card, scryfallByName)) continue;
-    const colors = getLaneColors(card, cardDataByName, scryfallByName);
+    const colors = card.colors ?? [];
     const colorless = colors.length === 0;
     if (laneColors.length === 0) {
       if (!colorless) continue;
@@ -712,20 +913,21 @@ function buildLaneStats(cards, laneColors, cardDataByName, scryfallByName, setAv
       continue;
     }
 
-    const apiCard = cardDataByName.get(normalizeName(card.name));
-    const gihWr =
-      typeof apiCard?.ever_drawn_win_rate === "number" ? apiCard.ever_drawn_win_rate : null;
     members.push({
       name: card.name,
       quantity: card.quantity,
-      gihWr,
-      games: apiCard?.ever_drawn_game_count ?? null,
+      gihWr: card.gihWr,
+      games: card.games,
       colors,
+      setCode: card.setCode,
+      setAverage: card.setAverage,
     });
   }
 
   const eligible = members.filter((card) => typeof card.gihWr === "number");
-  const above = eligible.filter((card) => setAverage !== null && card.gihWr > setAverage);
+  const above = eligible.filter(
+    (card) => card.setAverage !== null && card.gihWr > card.setAverage
+  );
   const power = [...eligible]
     .sort((a, b) => b.gihWr - a.gihWr || a.name.localeCompare(b.name))
     .slice(0, 3);
@@ -739,7 +941,7 @@ function buildLaneStats(cards, laneColors, cardDataByName, scryfallByName, setAv
   };
 }
 
-function buildFixingBuckets(cards, cardDataByName, scryfallByName) {
+function buildFixingBuckets(cards, scryfallByName) {
   const colorless = [];
   const green = [];
 
@@ -747,11 +949,9 @@ function buildFixingBuckets(cards, cardDataByName, scryfallByName) {
     if (isBasicLand(card, scryfallByName)) continue;
     const fixing = classifyFixing(card, scryfallByName);
     if (!fixing) continue;
-    const apiCard = cardDataByName.get(normalizeName(card.name));
     const row = {
       ...fixing,
-      gihWr:
-        typeof apiCard?.ever_drawn_win_rate === "number" ? apiCard.ever_drawn_win_rate : null,
+      gihWr: typeof card.gihWr === "number" ? card.gihWr : null,
     };
     if (row.bucket === "green") green.push(row);
     else colorless.push(row);
@@ -875,7 +1075,7 @@ function pickSplashCards(model, mainPair) {
       if (card.gihWr == null) {
         return card.rarity === "rare" || card.rarity === "mythic";
       }
-      if (model.setAverage != null) return card.gihWr > model.setAverage;
+      if (card.setAverage != null) return card.gihWr > card.setAverage;
       return true;
     }
     return card.rarity === "rare" || card.rarity === "mythic" || card.rarity === "special";
@@ -924,7 +1124,7 @@ function renderPips(colors) {
   return wrap;
 }
 
-function renderPowerChips(power) {
+function renderPowerChips(power, showSetCodes = false) {
   const wrap = document.createElement("div");
   wrap.className = "chips";
   if (power.length === 0) {
@@ -941,7 +1141,10 @@ function renderPowerChips(power) {
     const name = document.createElement("span");
     name.textContent = card.quantity > 1 ? `${card.quantity} ${card.name}` : card.name;
     const wr = document.createElement("small");
-    wr.textContent = formatPercent(card.gihWr);
+    wr.textContent =
+      showSetCodes && card.setCode
+        ? `${formatPercent(card.gihWr)} ${card.setCode}`
+        : formatPercent(card.gihWr);
     chip.append(name, wr);
     wrap.append(chip);
   }
@@ -983,18 +1186,18 @@ function renderRankHead(lane, rank, titleText, pipColors) {
   return head;
 }
 
-function renderColorCard(lane, rank, isLead) {
+function renderColorCard(lane, rank, isLead, showSetCodes) {
   const article = document.createElement("article");
   article.className = `rank-card rank-card-color${isLead ? " is-lead" : ""}`;
   article.dataset.color = lane.code;
   article.append(
     renderRankHead(lane, rank, COLOR_NAMES[lane.code] ?? lane.label, [lane.code]),
-    renderPowerChips(lane.power)
+    renderPowerChips(lane.power, showSetCodes)
   );
   return article;
 }
 
-function renderPairCard(lane, rank, isLead, why) {
+function renderPairCard(lane, rank, isLead, why, showSetCodes) {
   const article = document.createElement("article");
   article.className = `rank-card${isLead ? " is-lead" : ""}`;
   article.append(renderRankHead(lane, rank, shortPairName(lane.code), [...lane.code]));
@@ -1004,7 +1207,7 @@ function renderPairCard(lane, rank, isLead, why) {
     whyLine.textContent = why;
     article.append(whyLine);
   }
-  article.append(renderPowerChips(lane.power));
+  article.append(renderPowerChips(lane.power, showSetCodes));
   return article;
 }
 
@@ -1015,7 +1218,7 @@ function renderExpandButton(button, { hidden, expanded, moreLabel, fewerLabel })
   button.textContent = expanded ? fewerLabel : moreLabel;
 }
 
-function renderColorless(lane) {
+function renderColorless(lane, showSetCodes) {
   elements.colorlessCard.replaceChildren();
   const label = document.createElement("p");
   label.className = "footnote-label";
@@ -1031,7 +1234,7 @@ function renderColorless(lane) {
     lane.eligibleCopies === 0
       ? `${formatInteger(lane.copies)} colorless copies · no published GIH yet`
       : `${formatInteger(lane.depthCopies)} above avg · ${formatInteger(lane.depthCopies)} / ${formatInteger(lane.eligibleCopies)} eligible · ${formatInteger(lane.copies)} copies`;
-  elements.colorlessCard.append(label, depth, renderPowerChips(lane.power));
+  elements.colorlessCard.append(label, depth, renderPowerChips(lane.power, showSetCodes));
 }
 
 function renderFixingBucket(metaEl, listEl, rows) {
@@ -1089,7 +1292,7 @@ function renderColors(model) {
   elements.colorList.replaceChildren();
   visible.forEach((lane, index) => {
     const rank = ranked.indexOf(lane) + 1;
-    elements.colorList.append(renderColorCard(lane, rank, rank <= leadCount));
+    elements.colorList.append(renderColorCard(lane, rank, rank <= leadCount, model.multiSet));
   });
 
   renderExpandButton(elements.toggleColors, {
@@ -1111,7 +1314,7 @@ function renderPairs(model) {
   visible.forEach((lane) => {
     const rank = ranked.indexOf(lane) + 1;
     const why = showWhy ? describePairWhy(lane, monoByCode) : "";
-    elements.pairList.append(renderPairCard(lane, rank, rank <= 2, why));
+    elements.pairList.append(renderPairCard(lane, rank, rank <= 2, why, model.multiSet));
   });
 
   renderExpandButton(elements.togglePairs, {
@@ -1201,7 +1404,10 @@ function renderSplashCards(model) {
     );
     const meta = document.createElement("small");
     if (card.gihWr != null) {
-      meta.textContent = `${formatPercent(card.gihWr)} GIH`;
+      meta.textContent =
+        model.multiSet && card.setCode
+          ? `${formatPercent(card.gihWr)} GIH · ${card.setCode}`
+          : `${formatPercent(card.gihWr)} GIH`;
     } else if (card.rarity) {
       meta.textContent = `${card.rarity} · GIH unpublished`;
     } else {
@@ -1264,7 +1470,7 @@ function renderLaneModel(model) {
   lastLaneModel = model;
   renderColors(model);
   renderPairs(model);
-  renderColorless(model.colorless);
+  renderColorless(model.colorless, model.multiSet);
   renderFixingSummary(model);
   const splashCards = renderSplashCards(model);
   renderReadout(model, splashCards);
@@ -1272,27 +1478,67 @@ function renderLaneModel(model) {
   renderFixingBucket(elements.greenFixingMeta, elements.greenFixingList, model.fixing.green);
 }
 
+function gihNoteText({ setCache, setCodes, gihPublishedCount, unattributed }) {
+  const failedSets = setCodes.filter((code) => setCache.get(code)?.error);
+  const unpublishedSets = setCodes.filter((code) => {
+    const entry = setCache.get(code);
+    return entry && !entry.error && (entry.gihPublishedCount ?? 0) === 0;
+  });
+  const bits = [];
+
+  if (gihPublishedCount === 0 && unpublishedSets.length > 0 && failedSets.length === 0) {
+    const windowPhrase = setCodes.length > 1 ? "these windows" : "this window";
+    bits.push(
+      `17Lands has games for ${windowPhrase} but has not published card-level GIH WR yet (sample sizes are below their display threshold). Power and depth will fill in as more Sealed data lands. Fixing still uses Scryfall.`
+    );
+  } else if (unpublishedSets.length > 0 && unpublishedSets.length < setCodes.length) {
+    bits.push(
+      `${unpublishedSets.join(", ")} ${unpublishedSets.length === 1 ? "has" : "have"} no published card-level GIH WR yet. Those cards are omitted from power and depth.`
+    );
+  }
+
+  if (failedSets.length > 0) {
+    bits.push(`Could not load ratings for ${failedSets.join(", ")}.`);
+  }
+
+  if (unattributed.length > 0) {
+    const names = unattributed
+      .slice(0, 4)
+      .map((card) => card.name)
+      .join(", ");
+    const extra = unattributed.length > 4 ? `, +${unattributed.length - 4} more` : "";
+    bits.push(
+      `${formatInteger(unattributed.length)} card${unattributed.length === 1 ? "" : "s"} could not be attributed to a set (${names}${extra}). Those cards have no GIH.`
+    );
+  }
+
+  return bits.join(" ");
+}
+
 function renderResults({
-  setCode,
+  setCache,
+  setCodes,
   format,
-  range,
-  fallbackUsed,
-  setAverage,
   poolCopies,
   gihPublishedCount,
+  unattributed,
   model,
 }) {
-  elements.setName.textContent = `${SET_NAMES[setCode] ?? setCode} (${setCode})`;
+  const multiSet = setCodes.length > 1;
+  elements.setLabel.textContent = multiSet ? "Sets" : "Set";
+  elements.setName.textContent = describeSetList(setCodes);
   elements.formatName.textContent = formatLabel(format);
-  elements.dateRange.textContent = `${range.startDate} to ${range.endDate}${
-    fallbackUsed ? " (most recent available)" : ""
-  }`;
-  elements.setAvgGih.textContent = formatPercent(setAverage);
+  elements.dateRange.textContent = describeDateWindows(setCache, setCodes);
+  elements.setAvgLabel.textContent = "Set Avg GIH";
+  elements.setAvgGih.textContent = describeSetAverages(setCache, setCodes);
+  elements.setAvgGih.title = multiSet
+    ? "Each card is compared to the average GIH of its own set."
+    : "";
   elements.poolSize.textContent = `${formatInteger(poolCopies)} cards`;
 
-  if (gihPublishedCount === 0) {
-    elements.gihNote.textContent =
-      "17Lands has games for this window but has not published card-level GIH WR yet (sample sizes are below their display threshold). Power and depth will fill in as more Sealed data lands. Fixing still uses Scryfall.";
+  const note = gihNoteText({ setCache, setCodes, gihPublishedCount, unattributed });
+  if (note) {
+    elements.gihNote.textContent = note;
     elements.gihNote.classList.remove("hidden");
   } else {
     elements.gihNote.classList.add("hidden");
@@ -1317,108 +1563,101 @@ async function analyzeExport() {
   try {
     const parsed = parseArenaExport(exportText);
     const preferredRange = getDateRange();
-    let setCode = parsed.setCode;
+    let cards = parsed.cards;
+    let setCodes = orderedSetCodesFromCounts(nonBasicSetCounts(cards));
 
-    showStatus("Fetching 17Lands data...");
-    if (!setCode) {
+    if (setCodes.length === 0) {
       showStatus("Inferring set from card names...");
-      const inferredSet = await inferSetFromCards(parsed.cards, format, preferredRange);
-      setCode = inferredSet.setCode;
+      const inferredSet = await inferSetFromCards(cards, format, preferredRange);
+      setCodes = [inferredSet.setCode];
+      assignSetCode(cards, inferredSet.setCode);
     }
 
-    showStatus(`Finding the latest ${formatLabel(format)} data...`);
-    const { range, fallbackUsed } = await findMostRecentAvailableRange(
-      setCode,
-      format,
-      preferredRange,
-      showStatus
-    );
+    if (setCodes.length === 1) {
+      showStatus(`Finding the latest ${formatLabel(format)} data...`);
+    } else {
+      showStatus(fetchingSetsStatus(setCodes));
+    }
 
-    showStatus("Loading card ratings...");
-    const allCardData = await fetchCardRatings({
-      setCode,
-      format,
-      startDate: range.startDate,
-      endDate: range.endDate,
-    });
-    const cardDataByName = buildCardDataMap(allCardData);
-    const setAverage = calculateSetAverage(allCardData);
-    const gihPublishedCount = (allCardData ?? []).filter(
-      (card) => typeof card.ever_drawn_win_rate === "number"
-    ).length;
+    const setCache = await loadRatingsForSets(setCodes, format, preferredRange, showStatus);
+    const loadedSets = setCodes.filter((code) => !setCache.get(code)?.error);
+    if (loadedSets.length === 0) {
+      const firstError = setCache.get(setCodes[0])?.error;
+      throw new Error(firstError || "Could not load 17Lands ratings for the sets in this pool.");
+    }
+
+    let unattributed = [];
+    if (setCodes.length === 1) {
+      assignSetCode(cards, setCodes[0]);
+    } else {
+      unattributed = attributeCardsToFetchedSets(cards, setCache);
+    }
+    cards = mergePoolCards(cards);
 
     showStatus("Enriching pool cards with Scryfall...");
     let scryfallByName = new Map();
     try {
-      scryfallByName = await fetchScryfallCollection(
-        parsed.cards.filter((card) => !isBasicLand(card))
-      );
+      scryfallByName = await fetchScryfallCollection(cards.filter((card) => !isBasicLand(card)));
     } catch (error) {
       showStatus(`${error.message} Continuing without fixing details.`);
     }
 
+    const enriched = enrichPoolCards(cards, setCache, scryfallByName);
     const pairs = PAIR_CODES_ORDER.map((code, order) => ({
       code,
       order,
       label: describeLane(code),
-      ...buildLaneStats(parsed.cards, [...code], cardDataByName, scryfallByName, setAverage),
+      ...buildLaneStats(enriched, [...code], scryfallByName),
     }));
     const mono = MONO_CODES.map((code, order) => ({
       code,
       order,
       label: describeLane(code),
-      ...buildLaneStats(parsed.cards, [code], cardDataByName, scryfallByName, setAverage),
+      ...buildLaneStats(enriched, [code], scryfallByName),
     }));
     const colorless = {
       code: "C",
       label: describeLane("C"),
-      ...buildLaneStats(parsed.cards, [], cardDataByName, scryfallByName, setAverage, {
+      ...buildLaneStats(enriched, [], scryfallByName, {
         excludeColorlessFixers: true,
       }),
     };
-    const fixing = buildFixingBuckets(parsed.cards, cardDataByName, scryfallByName);
-    const poolCards = parsed.cards
-      .filter((card) => !isBasicLand(card, scryfallByName))
-      .map((card) => {
-        const apiCard = cardDataByName.get(normalizeName(card.name));
-        const sf = scryfallByName.get(normalizeName(card.name));
-        const fixingRow = classifyFixing(card, scryfallByName);
-        return {
-          name: card.name,
-          quantity: card.quantity,
-          colors: getLaneColors(card, cardDataByName, scryfallByName),
-          gihWr:
-            typeof apiCard?.ever_drawn_win_rate === "number" ? apiCard.ever_drawn_win_rate : null,
-          rarity: sf?.rarity ?? null,
-          isFixer: Boolean(fixingRow),
-          isLand: Boolean(sf && isLandCard(sf)),
-        };
-      });
+    const fixing = buildFixingBuckets(enriched, scryfallByName);
+    const poolCards = enriched.filter((card) => !isBasicLand(card, scryfallByName));
+    const gihPublishedCount = [...setCache.values()].reduce(
+      (sum, entry) => sum + (entry.gihPublishedCount ?? 0),
+      0
+    );
 
     uiState.showAllColors = false;
     uiState.showAllPairs = false;
 
     renderResults({
-      setCode,
+      setCache,
+      setCodes,
       format,
-      range,
-      fallbackUsed,
-      setAverage,
       poolCopies: parsed.poolCopies,
       gihPublishedCount,
+      unattributed,
       model: {
         pairs,
         mono,
         colorless,
         fixing,
         poolCards,
-        setAverage,
+        setAverage: setCodes.length === 1 ? setCache.get(setCodes[0])?.setAverage ?? null : null,
         gihPublished: gihPublishedCount > 0,
+        multiSet: setCodes.length > 1,
+        setCodes,
       },
     });
     elements.results.scrollIntoView({ behavior: "smooth", block: "start" });
 
-    if (gihPublishedCount === 0) {
+    if (unattributed.length > 0) {
+      showStatus(
+        `Done. ${formatInteger(unattributed.length)} card${unattributed.length === 1 ? "" : "s"} could not be attributed to a set.`
+      );
+    } else if (gihPublishedCount === 0) {
       showStatus("Done. Card-level GIH is unpublished for this window; fixing and lane membership still ran.");
     } else {
       showStatus("Done.");

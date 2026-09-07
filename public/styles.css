@@ -274,6 +274,10 @@ button.secondary:hover {
   overflow-wrap: anywhere;
 }
 
+.summary-bar strong[title] {
+  cursor: help;
+}
+
 .readout {
   margin: 12px 0 0;
   padding: 12px 14px;

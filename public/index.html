@@ -54,7 +54,7 @@
       <section id="results" class="results hidden" aria-live="polite">
         <div class="summary-bar">
           <article>
-            <span>Set</span>
+            <span id="set-label">Set</span>
             <strong id="set-name">-</strong>
           </article>
           <article>
@@ -66,7 +66,7 @@
             <strong id="date-range">-</strong>
           </article>
           <article>
-            <span>Set Avg GIH</span>
+            <span id="set-avg-label">Set Avg GIH</span>
             <strong id="set-avg-gih">-</strong>
           </article>
           <article>
@@ -83,7 +83,8 @@
           <h2 id="colors-title">Which colors have the most power and depth?</h2>
           <p class="section-note">
             Ranked by depth (copies above set-avg GIH), then power (top 3 by
-            GIH). Top colors are shown first.
+            GIH). Mixed-set pools compare each card to its own set average.
+            Top colors are shown first.
           </p>
           <div id="color-list" class="rank-list"></div>
           <button
@@ -103,7 +104,8 @@
           <h2 id="pairs-title">Which color pairs make sense from that?</h2>
           <p class="section-note">
             Pair lanes still include both monocolors plus the gold pair. Default
-            list is the best few, not all ten.
+            list is the best few, not all ten. Depth still uses each card's own
+            set-average GIH.
           </p>
           <div id="pair-list" class="rank-list"></div>
           <button
@@ -148,6 +150,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=4" defer></script>
+    <script src="app.js?v=5" defer></script>
   </body>
 </html>
