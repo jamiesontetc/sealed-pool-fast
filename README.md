@@ -30,22 +30,39 @@ Every card line in the paste is the sealed pool. If `Deck` / `Sideboard`
 headers appear, both sections are concatenated. Basic lands are counted in
 pool size but skipped for power, depth, set average, and fixing.
 
+Arena lines like `1 Card Name (HOB) 123` supply a **set code**. The app groups
+cards by that code and fetches 17Lands sealed ratings **per distinct set**.
+Reprints of the same name from different sets stay separate. Cards with no set
+code are matched by name against the fetched payloads when the match is unique
+(pool sets first). Ambiguous or unmatched names stay unattributed: they can
+still sit in color lanes via Scryfall, but they have no GIH.
+
+A paste with no set codes still infers a single set from card names, same as
+before.
+
 ### Date window
 
-The app prefers the last two weeks of 17Lands data for the inferred set and
-selected format. Presence is detected from `color_ratings` (`event_type=Sealed`
-or `TradSealed`) using the All Decks game count.
+The app prefers the last two weeks of 17Lands data for **each set** in the pool
+and the selected format. Presence is detected from `color_ratings`
+(`event_type=Sealed` or `TradSealed`) using the All Decks game count.
 
 If that window has no sealed games, it walks backward in two-week chunks until
 it finds games (or hits the set start date). When a fallback chunk is used, it
 expands that window by four earlier weeks, so fallback results use a six-week
-range.
+range. Mixed-set pools run this independently per set, so windows can differ.
 
 ### Set average GIH
 
-Mean of `ever_drawn_win_rate` over every non-basic card in the all-decks
-`card_ratings` payload for that set, format (`Sealed` or `TradSealed`), and
-date window. Cards with no published GIH WR are omitted from the mean.
+For each set, the mean of `ever_drawn_win_rate` over every non-basic card in
+that set's all-decks `card_ratings` payload for the selected format
+(`Sealed` or `TradSealed`) and that set's date window. Cards with no published
+GIH WR are omitted from the mean.
+
+**Depth uses that per-set average.** Each pool card is compared to the
+set-average GIH of **its own set**, not a blended pool-wide mean. Color and
+pair depth totals still sum copies across the whole pool; only the threshold
+is set-local. When the summary lists multiple sets, Set Avg GIH shows each
+set's mean.
 
 17Lands often withholds card-level win rates until a sample-size threshold is
 met, even when `color_ratings` already shows games. The UI notes that case.
@@ -74,8 +91,10 @@ Basics are skipped. Cards without published GIH WR cannot appear in power.
 ### Depth
 
 For each of those lanes: count of **copies** whose GIH WR is **greater than
-the set average**. Shown as `N above avg` and `N / eligible copies`. Eligible
-copies are lane copies that have a published GIH WR. Basics are skipped.
+that card's set average**. Shown as `N above avg` and `N / eligible copies`.
+Eligible copies are lane copies that have a published GIH WR. Basics are
+skipped. In a mixed-set pool a HOB card is above-average only if it beats the
+HOB sealed mean, even when SOS's mean is different.
 
 ### Fixing (not GIH-primary)
 
